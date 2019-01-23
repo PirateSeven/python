@@ -1,0 +1,230 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+#All the libraries must be installed in advance
+import os
+import csv
+import datetime
+import glob
+import pandas as pd
+import time
+import shutil
+import re
+from pathlib import Path
+import http.client
+
+
+#Getting execution time
+dt_now = datetime.datetime.now()
+
+#Getting target dates
+today = (str(dt_now.year)+str(dt_now.month)+str(dt_now.day))
+today2  = datetime.date.today()
+
+y = pd.to_datetime(today2) + pd.DateOffset(days=-1)
+yesterday  = y.strftime('%Y%m%d%H%M%S')
+yesterday2 = (str(y.year)+"-"+str(y.month)+"-"+str(y.day))
+
+
+
+
+#[Optional]:S3 Credentials
+
+
+#[Required]:Treasure Data Credentials
+myAPIkey = '--your API key--'
+
+
+#Path Configuration: Please set up before execution
+
+#[Required]:The parent directory that will be created and deleted at every execution
+new_dir_path = "--Parent directory for data--"
+
+
+
+#[Optional]:If there is anything to out put
+out_dir = "-output directory-"
+
+#[Required]:Specify S3 path of parent directory of table directories 
+s3path ="--target S3 path--"
+
+#[Required]:this csv must contain a list of tables
+    #a.if you want to minimize or specify the number of tables, remove unnecessary tables from the csv
+    #b.The list of full tables can be otained from Treasure Data: schema_information
+
+table_list = [line.rstrip('\n') for line in open('table_list.csv')]
+
+#set dir_path
+dirPath = new_dir_path+"/"
+csv_dir_path = new_dir_path
+
+start = time.time()
+print("\n\nDownlaod files will be stored in: "+ dirPath)
+
+
+#Create a new directory for downloading files
+os.mkdir(new_dir_path)
+print("Directory Created: "+str(new_dir_path))
+
+
+
+# Downlaod all the dairly files from S3
+
+print("\n\nDownload Execution: " + str(dt_now))
+print ( "\n\n\nDownloading files from S3.....\n\n")
+x1 = 0
+for x1 in range(len(table_list)):
+    print(table_list[x1])
+    s3cmd = "aws s3 sync s3:"+str(s3path)+table_list[x1]+" "+csv_dir_path+"/"+table_list[x1]+" --exclude \"LOAD\" --exclude \"*\" --include" 
+    s3cmd_ex = s3cmd + " \"" + yesterday + "*\""+" --region ap-northeast-1 --profile <keyword>"
+    
+    #Use terminal to throw S3 commands
+    os.system(s3cmd_ex)
+
+
+#Displays total execution time:
+if __name__ == '__main__':
+    
+    for i in range(0,7):
+        print ("-")
+    elapsed_time = round((time.time() - start),2)
+    print ("Completed!\n\nDownload Time:{0}".format(elapsed_time) + "[sec]")
+    
+#Create a directory list:
+print("\nTime: "+str(dt_now))
+dirList = os.listdir(dirPath)
+
+#Show the summary information of the traget files;
+i = (len(dirList))
+
+print("\nSummary:\nThe number of files: " + str(os.path.getsize(dirPath)))
+print("The number of tables: " + str(i))
+
+
+#Get csv list and declare variable
+print("Target directories are set. \n")
+csv_dir = glob.glob(dirPath+"*")
+
+
+# In[109]:
+
+
+#Get Table List from S3 bucket
+tableList = os.listdir(dirPath)
+print(tableList)
+
+
+#In this section, merged files of daily incremental data are created.
+
+# Fresh Counter
+j = 0
+m = 0
+n = 0
+print("\n\n\nNow mergeing files....")
+
+#Find csv files with yesterday's prefix and store them into the list
+    # <i> : the number of tables
+
+for j in range(i):
+    csv_files = glob.glob(csv_dir[j]+"/"+yesterday+"*.csv")
+    #print (csv_files)
+    
+    with open (csv_dir[j] + "/"+ yesterday + "-merged.csv","wb") as file_merged:
+        for (j, name) in enumerate(csv_files):
+            with open(name, "rb") as csv_files:
+                if j != 0:
+                    next(csv_files) # skip headers if not first file
+                file_merged.write(csv_files.read())
+
+
+
+print("\n\n\nNow counting...\n")
+
+
+#Deleting merge file with no data
+    #Empty merged files are created in the previous merge section.
+
+#Fresh Counter
+p = 0
+for p in range(len(csv_dir)):
+    files = os.listdir(csv_dir[p])
+    #print (files)
+    p1 = 0
+    for file in files:
+        index = re.search('.csv',file)
+        if index:
+            p1 = p1+1
+    if p1 == 1:
+        cmdDel = "rm "+csv_dir[p]+"/"+yesterday+"-merged.csv"
+        #print(csv_dir[p1] + p1 +" deleted.")
+        print(csv_dir[p] + " "+ str(p1)+" file deleted.")
+        os.system(cmdDel)
+    else:
+        print(csv_dir[p] + " "+ str(p1)+" files will be merged.")
+
+
+
+#Counting the record and sending the result to Treasure Data by using HTTP Request
+print("\n\nNow Counting:\n\n")
+#Fresh Counter
+o = 0
+
+#Arrays
+cnt = []
+table_name = []
+count = []
+date = []
+
+
+#print (str(len(csv_dir)))
+#print (str(len(table_list)))   
+#print(tableList)
+
+for o in range(len(csv_dir)):
+    conn = http.client.HTTPSConnection('tokyo.in.treasuredata.com')
+
+    my_file = Path(csv_dir[o]+"/"+yesterday+"-merged.csv")
+    
+    if my_file.is_file():
+        # If file exists, add count and date
+        file = my_file
+        df = pd.read_csv(file,header=0, engine='python')
+        cnt.append((tableList[o]+","+str(len(df.index))+","+yesterday2))
+        
+        print(tableList[o]+","+str(len(df.index))+","+yesterday2)
+        conn.request('GET', '/postback/v3/event/schema_name/column_name?td_write_key={}&schema_name={}&table_name={}&count={}&date={}'
+                     .format(myAPIkey,'schema_name',tableList[o],len(df.index),yesterday2))
+        
+    else:
+        #If there is no file merged, then no incremental data
+        cnt.append(tableList[o]+","+ str(0)+","+yesterday2)
+        print(tableList[o]+","+ str(0)+","+yesterday2)
+        
+        conn.request('GET', '/postback/v3/event/schema_name/column_name?td_write_key={}&schema_name={}&table_name={}&count={}&date={}'
+                     .format(myAPIkey,'schema_name',tableList[o],'0',yesterday2))
+
+    if conn.getresponse().status != 200:
+        print('request to TD failed')
+        
+       
+
+#print(len(csv_dir))
+
+
+
+#Delete the directory where download files are stored
+shutil.rmtree(new_dir_path)
+print("\n\nDirectory Deleted\n\n")
+
+
+#Displays total execution time:
+
+if __name__ == '__main__':
+    
+    for i in range(0,11):
+        print ("-")
+    elapsed_time = round((time.time() - start),2)
+    print ("Total Execution Time:{0}".format(elapsed_time) + "[sec]")
+    
+    
+#EOF
